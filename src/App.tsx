@@ -1,6 +1,8 @@
 import React, { Component, ErrorInfo, ReactNode, useEffect, useMemo, useState } from 'react';
 import {
   Camera,
+  Check,
+  Copy,
   ExternalLink,
   FolderOpen,
   KeyRound,
@@ -32,6 +34,7 @@ import {
 } from './types';
 import {
   db,
+  FIREBASE_PROJECT_ID,
   googleSignIn,
   handleFirestoreError,
   initAuth,
@@ -99,6 +102,7 @@ function MainApp() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [copiedHost, setCopiedHost] = useState(false);
 
   const [locations, setLocations] = useState<string[]>(DEFAULT_LOCATIONS);
   const [workStages, setWorkStages] = useState<string[]>(DEFAULT_WORK_STAGES);
@@ -373,8 +377,64 @@ function MainApp() {
               </div>
 
               {authError && (
-                <div className="rounded-lg bg-red-50 p-3 text-xs font-medium text-red-800 max-w-md">
-                  {authError}
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-900 max-w-lg space-y-2.5">
+                  <p className="font-semibold text-red-800">{authError}</p>
+                  {(authError.includes('unauthorized-domain') ||
+                    authError.includes('origin')) && (
+                    <div className="space-y-2 border-t border-red-200 pt-2.5 text-slate-700">
+                      <p>
+                        Domain aplikasi saat ini belum terdaftar di{' '}
+                        <strong>Firebase Authorized Domains</strong> proyek{' '}
+                        <span className="font-mono">{FIREBASE_PROJECT_ID}</span>:
+                      </p>
+                      <div className="flex items-center justify-between gap-2 rounded-lg border border-red-200 bg-white px-3 py-2">
+                        <span className="font-mono text-[11px] text-slate-900 break-all">
+                          {typeof window !== 'undefined' ? window.location.hostname : ''}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard?.writeText(window.location.hostname);
+                            setCopiedHost(true);
+                            setTimeout(() => setCopiedHost(false), 2000);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-slate-800 shrink-0"
+                        >
+                          {copiedHost ? (
+                            <>
+                              <Check className="h-3 w-3" />
+                              Tersalin
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3 w-3" />
+                              Salin Domain
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-3 pt-1">
+                        <a
+                          href={`https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/authentication/settings`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline"
+                        >
+                          Buka Firebase Authorized Domains
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                        <a
+                          href={`https://console.cloud.google.com/apis/credentials?project=${FIREBASE_PROJECT_ID}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline"
+                        >
+                          Buka Google OAuth Origins
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
