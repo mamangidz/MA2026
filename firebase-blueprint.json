@@ -1,0 +1,300 @@
+{
+  "entities": {
+    "AppTaxonomy": {
+      "title": "AppTaxonomy",
+      "description": "Configuration for available field locations, work stages, and target Google Drive root folder.",
+      "type": "object",
+      "properties": {
+        "locations": {
+          "type": "array",
+          "description": "Configured location names."
+        },
+        "workStages": {
+          "type": "array",
+          "description": "Configured work stages (Tahapan Pekerjaan)."
+        },
+        "driveRootFolderId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Google Drive root folder ID."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when taxonomy was last updated."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "UID of admin who updated taxonomy."
+        }
+      },
+      "required": ["locations", "workStages", "driveRootFolderId", "updatedAt", "updatedByUid"]
+    },
+    "ManagedUser": {
+      "title": "ManagedUser",
+      "description": "User management directory entry with role authorization (user, admin, viewer) and location assignment.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "rowNumber": {
+          "type": "integer"
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "picName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "admin", "viewer"]
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "googleEmail": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "devicePolicy": {
+          "type": "string",
+          "enum": ["android_cellular", "windows_pc"]
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "rowNumber",
+        "location",
+        "picName",
+        "role",
+        "username",
+        "password",
+        "googleEmail",
+        "devicePolicy",
+        "active",
+        "ownerUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PhotoSubmission": {
+      "title": "PhotoSubmission",
+      "description": "Field equipment or document photo submission stored in Google Drive with GPS coordinates, timestamp, and admin validation state.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "workStage": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "activityDate": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10
+        },
+        "category": {
+          "type": "string",
+          "enum": ["Peralatan", "Dokumen"]
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "driveRootFolderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "driveFolderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "driveFolderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "driveFileId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "driveFileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "driveWebViewLink": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "capturedTime": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 20
+        },
+        "capturedDate": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10
+        },
+        "latitude": {
+          "type": "number"
+        },
+        "longitude": {
+          "type": "number"
+        },
+        "gpsAccuracy": {
+          "type": "number"
+        },
+        "devicePlatform": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "picName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "picUsername": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "uploadedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "uploadedByEmail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "viewerEmails": {
+          "type": "array"
+        },
+        "adminEmails": {
+          "type": "array"
+        },
+        "validationStatus": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"]
+        },
+        "validationNote": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "validatedBy": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "validatedAt": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "location",
+        "workStage",
+        "activityDate",
+        "category",
+        "notes",
+        "driveRootFolderId",
+        "driveFolderId",
+        "driveFolderName",
+        "driveFileId",
+        "driveFileName",
+        "driveWebViewLink",
+        "capturedTime",
+        "capturedDate",
+        "latitude",
+        "longitude",
+        "gpsAccuracy",
+        "devicePlatform",
+        "picName",
+        "picUsername",
+        "uploadedByUid",
+        "uploadedByEmail",
+        "viewerEmails",
+        "adminEmails",
+        "validationStatus",
+        "validationNote",
+        "validatedBy",
+        "validatedAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/config/{configId}": {
+      "schema": { "$ref": "#/entities/AppTaxonomy" },
+      "description": "Single configuration document (app_taxonomy) storing locations and work stages."
+    },
+    "/managed_users/{userId}": {
+      "schema": { "$ref": "#/entities/ManagedUser" },
+      "description": "User management directory records with role (user, admin, viewer), location, and credentials."
+    },
+    "/photo_submissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/PhotoSubmission" },
+      "description": "Uploaded field equipment and document photo records linked to Google Drive with GPS and validation state."
+    }
+  }
+}

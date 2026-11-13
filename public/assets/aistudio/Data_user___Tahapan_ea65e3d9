@@ -1,0 +1,18 @@
+No,Nama Lokasi,PIC PANDA,Otorisasi,username ,password
+1,Jakarta,Neneng,Viewer,Neneng,Neneng123
+2,Bandung,Syaiful,Viewer,Syaiful,Syaiful123
+3,Surabaya,Ary K,Viewer,Ary K,Ary123
+4,Jogyakarta,Sunyoto,Viewer,Sunyoto,Sunyoto123
+5,Semarang,Wikan,Viewer,Wikan,Wikan123
+6,Banten,Khudori,Viewer,Khudori,Khudori123
+7,Ambon,Bebe,Viewer,Bebe,Bebe123
+,,,,,
+No,Nama Lokasi,PIC Genius,Otorisasi,username ,password
+1,Jakarta,Wahyu,user,Wahyu,Wahyu123
+2,Bandung,Fery,user,Fery,Fery123
+3,Surabaya,Fikri,user,Fikri,Fikri123
+4,Jogyakarta,Misbah,user,Misbah,Misbah123
+5,Semarang,Albert,user,Albert,Albert123
+6,Banten,Idzay,user,Idzay,Idzay123
+7,Ambon,Fauji ,user,Fauji ,Fauji123 
+8,Pusat,pusat,admin,Pusat,Pusat123

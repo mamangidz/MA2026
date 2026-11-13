@@ -1,0 +1,6 @@
+{
+  "name": "FieldSnap Drive — Dokumentasi Peralatan & Dokumen Lapangan",
+  "description": "Aplikasi pengumpulan foto peralatan dan dokumen lapangan terintegrasi Google Drive dengan penandaan GPS, waktu, manajemen user berbasis lokasi, dan validasi admin.",
+  "requestFramePermissions": ["camera", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

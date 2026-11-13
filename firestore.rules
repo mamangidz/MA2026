@@ -1,0 +1,238 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email == 'mamangidz@gmail.com';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isBoundedStringList(listVal, maxLen) {
+      return listVal is list
+        && listVal.size() <= maxLen
+        && (listVal.size() == 0 || (listVal[0] is string && listVal[0].size() >= 1 && listVal[0].size() <= 120));
+    }
+
+    function isValidAppTaxonomy(data) {
+      return data.keys().hasAll(['locations', 'workStages', 'driveRootFolderId', 'updatedAt', 'updatedByUid'])
+        && data.keys().hasOnly(['locations', 'workStages', 'driveRootFolderId', 'updatedAt', 'updatedByUid'])
+        && isBoundedStringList(data.locations, 50)
+        && isBoundedStringList(data.workStages, 50)
+        && data.driveRootFolderId is string
+        && data.driveRootFolderId.size() >= 1
+        && data.driveRootFolderId.size() <= 128
+        && data.updatedAt is timestamp
+        && data.updatedByUid is string
+        && data.updatedByUid.size() >= 1
+        && data.updatedByUid.size() <= 128
+        && data.updatedByUid == request.auth.uid;
+    }
+
+    function isValidManagedUser(data) {
+      return data.keys().hasAll([
+          'id', 'rowNumber', 'location', 'picName', 'role', 'username',
+          'password', 'googleEmail', 'devicePolicy', 'active', 'ownerUid',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'rowNumber', 'location', 'picName', 'role', 'username',
+          'password', 'googleEmail', 'devicePolicy', 'active', 'ownerUid',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.rowNumber is int
+        && data.rowNumber >= 0
+        && data.rowNumber <= 100000
+        && data.location is string && data.location.size() >= 1 && data.location.size() <= 80
+        && data.picName is string && data.picName.size() >= 1 && data.picName.size() <= 100
+        && data.role is string && data.role in ['user', 'admin', 'viewer']
+        && data.username is string && data.username.size() >= 1 && data.username.size() <= 60
+        && data.password is string && data.password.size() >= 1 && data.password.size() <= 100
+        && data.googleEmail is string && data.googleEmail.size() <= 120
+        && data.devicePolicy is string && data.devicePolicy in ['android_cellular', 'windows_pc']
+        && data.active is bool
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPhotoSubmission(data) {
+      return data.keys().hasAll([
+          'id', 'location', 'workStage', 'activityDate', 'category', 'notes',
+          'driveRootFolderId', 'driveFolderId', 'driveFolderName', 'driveFileId',
+          'driveFileName', 'driveWebViewLink', 'capturedTime', 'capturedDate',
+          'latitude', 'longitude', 'gpsAccuracy', 'devicePlatform', 'picName',
+          'picUsername', 'uploadedByUid', 'uploadedByEmail', 'viewerEmails',
+          'adminEmails', 'validationStatus', 'validationNote', 'validatedBy',
+          'validatedAt', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'location', 'workStage', 'activityDate', 'category', 'notes',
+          'driveRootFolderId', 'driveFolderId', 'driveFolderName', 'driveFileId',
+          'driveFileName', 'driveWebViewLink', 'capturedTime', 'capturedDate',
+          'latitude', 'longitude', 'gpsAccuracy', 'devicePlatform', 'picName',
+          'picUsername', 'uploadedByUid', 'uploadedByEmail', 'viewerEmails',
+          'adminEmails', 'validationStatus', 'validationNote', 'validatedBy',
+          'validatedAt', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.location is string && data.location.size() >= 1 && data.location.size() <= 80
+        && data.workStage is string && data.workStage.size() >= 1 && data.workStage.size() <= 120
+        && data.activityDate is string && data.activityDate.size() == 10
+        && data.category is string && data.category in ['Peralatan', 'Dokumen']
+        && data.notes is string && data.notes.size() <= 500
+        && data.driveRootFolderId is string && data.driveRootFolderId.size() >= 1 && data.driveRootFolderId.size() <= 128
+        && data.driveFolderId is string && data.driveFolderId.size() >= 1 && data.driveFolderId.size() <= 128
+        && data.driveFolderName is string && data.driveFolderName.size() >= 1 && data.driveFolderName.size() <= 200
+        && data.driveFileId is string && data.driveFileId.size() >= 1 && data.driveFileId.size() <= 128
+        && data.driveFileName is string && data.driveFileName.size() >= 1 && data.driveFileName.size() <= 240
+        && data.driveWebViewLink is string && data.driveWebViewLink.size() >= 1 && data.driveWebViewLink.size() <= 500
+        && data.capturedTime is string && data.capturedTime.size() >= 5 && data.capturedTime.size() <= 20
+        && data.capturedDate is string && data.capturedDate.size() == 10
+        && data.latitude is number && data.latitude >= -90 && data.latitude <= 90
+        && data.longitude is number && data.longitude >= -180 && data.longitude <= 180
+        && data.gpsAccuracy is number && data.gpsAccuracy >= 0 && data.gpsAccuracy <= 100000
+        && data.devicePlatform is string && data.devicePlatform.size() >= 1 && data.devicePlatform.size() <= 80
+        && data.picName is string && data.picName.size() >= 1 && data.picName.size() <= 100
+        && data.picUsername is string && data.picUsername.size() >= 1 && data.picUsername.size() <= 60
+        && data.uploadedByUid is string && data.uploadedByUid.size() >= 1 && data.uploadedByUid.size() <= 128
+        && data.uploadedByEmail is string && data.uploadedByEmail.size() >= 1 && data.uploadedByEmail.size() <= 120
+        && isBoundedStringList(data.viewerEmails, 10)
+        && isBoundedStringList(data.adminEmails, 10)
+        && data.validationStatus is string && data.validationStatus in ['pending', 'approved', 'rejected']
+        && data.validationNote is string && data.validationNote.size() <= 500
+        && data.validatedBy is string && data.validatedBy.size() <= 100
+        && data.validatedAt is string && data.validatedAt.size() <= 40
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /config/{configId} {
+      allow get: if isVerified() && configId == 'app_taxonomy';
+      allow list: if false;
+      allow create: if isBootstrappedAdmin()
+        && configId == 'app_taxonomy'
+        && isValidAppTaxonomy(incoming())
+        && incoming().updatedAt == request.time;
+      allow update: if isBootstrappedAdmin()
+        && configId == 'app_taxonomy'
+        && isValidAppTaxonomy(incoming())
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['locations', 'workStages', 'driveRootFolderId', 'updatedAt', 'updatedByUid']);
+      allow delete: if false;
+    }
+
+    match /managed_users/{userId} {
+      allow get: if isVerified()
+        && isValidId(userId)
+        && (isBootstrappedAdmin()
+          || existing().ownerUid == request.auth.uid
+          || (existing().googleEmail != '' && existing().googleEmail == request.auth.token.email));
+
+      allow list: if isVerified()
+        && (isBootstrappedAdmin()
+          || resource.data.ownerUid == request.auth.uid
+          || (resource.data.googleEmail != '' && resource.data.googleEmail == request.auth.token.email));
+
+      allow create: if isBootstrappedAdmin()
+        && isValidId(userId)
+        && isValidManagedUser(incoming())
+        && incoming().id == userId
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isBootstrappedAdmin()
+        && isValidId(userId)
+        && isValidManagedUser(incoming())
+        && incoming().id == existing().id
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'rowNumber', 'location', 'picName', 'role', 'username',
+          'password', 'googleEmail', 'devicePolicy', 'active', 'updatedAt'
+        ]);
+
+      allow delete: if isBootstrappedAdmin() && isValidId(userId);
+    }
+
+    match /photo_submissions/{submissionId} {
+      allow get: if isVerified()
+        && isValidId(submissionId)
+        && (isBootstrappedAdmin()
+          || existing().uploadedByUid == request.auth.uid
+          || (request.auth.token.email in existing().viewerEmails)
+          || (request.auth.token.email in existing().adminEmails));
+
+      allow list: if isVerified()
+        && (isBootstrappedAdmin()
+          || resource.data.uploadedByUid == request.auth.uid
+          || (request.auth.token.email in resource.data.viewerEmails)
+          || (request.auth.token.email in resource.data.adminEmails));
+
+      allow create: if isVerified()
+        && isValidId(submissionId)
+        && isValidPhotoSubmission(incoming())
+        && incoming().id == submissionId
+        && incoming().uploadedByUid == request.auth.uid
+        && incoming().uploadedByEmail == request.auth.token.email
+        && incoming().validationStatus == 'pending'
+        && incoming().validationNote == ''
+        && incoming().validatedBy == ''
+        && incoming().validatedAt == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerified()
+        && isValidId(submissionId)
+        && isValidPhotoSubmission(incoming())
+        && incoming().id == existing().id
+        && incoming().uploadedByUid == existing().uploadedByUid
+        && incoming().uploadedByEmail == existing().uploadedByEmail
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isBootstrappedAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'validationStatus', 'validationNote', 'validatedBy', 'validatedAt',
+              'viewerEmails', 'adminEmails', 'notes', 'updatedAt'
+            ])
+          )
+          || (
+            (request.auth.token.email in existing().adminEmails)
+            && existing().validationStatus == 'pending'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'validationStatus', 'validationNote', 'validatedBy', 'validatedAt', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isBootstrappedAdmin() && isValidId(submissionId);
+    }
+  }
+}
