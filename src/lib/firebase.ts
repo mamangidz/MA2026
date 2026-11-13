@@ -1,10 +1,12 @@
-import { initializeApp } from 'firebase/app';
+import { deleteApp, initializeApp } from 'firebase/app';
 import {
+  createUserWithEmailAndPassword,
   getAuth,
   GoogleAuthProvider,
   onAuthStateChanged,
-  signInWithCredential,
+  signInWithEmailAndPassword,
   signInWithPopup,
+  signOut,
   User,
 } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
@@ -48,6 +50,8 @@ provider.setCustomParameters({ prompt: 'select_account' });
 
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
+
+export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
 
 export enum OperationType {
   CREATE = 'create',
@@ -112,6 +116,15 @@ async function testConnection() {
 }
 testConnection();
 
+export function usernameToAuthEmail(username: string): string {
+  const slug = username
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `${slug || 'user'}@fieldsnap.app`;
+}
+
 export const initAuth = (
   onAuthChange: (user: User | null, token: string | null) => void
 ) => {
@@ -129,75 +142,55 @@ export const initAuth = (
   });
 };
 
-async function loadGisScriptIfNeeded(): Promise<void> {
-  if (window.google?.accounts?.oauth2) return;
-  await new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>(
-      'script[src*="accounts.google.com/gsi/client"]'
-    );
-    if (existing) {
-      let waited = 0;
-      const timer = setInterval(() => {
-        if (window.google?.accounts?.oauth2) {
-          clearInterval(timer);
-          resolve();
-        } else if (waited > 5000) {
-          clearInterval(timer);
-          reject(new Error('Google Identity Services timeout'));
-        }
-        waited += 100;
-      }, 100);
-      return;
-    }
+export const loginWithUsernamePassword = async (
+  username: string,
+  password: string
+): Promise<User> => {
+  const email = usernameToAuthEmail(username);
+  const result = await signInWithEmailAndPassword(auth, email, password);
+  return result.user;
+};
 
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Gagal memuat Google Identity Services'));
-    document.head.appendChild(script);
-  });
-}
+export async function provisionPasswordAccount(
+  username: string,
+  password: string
+): Promise<{ authEmail: string; authUid: string; errorCode?: string }> {
+  const authEmail = usernameToAuthEmail(username);
+  const secondaryName = `provision_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const secondaryApp = initializeApp(firebaseConfig, secondaryName);
+  const secondaryAuth = getAuth(secondaryApp);
 
-async function signInWithGisFallback(): Promise<{
-  user: User;
-  accessToken: string;
-}> {
-  const clientId = firebaseConfig.oAuthClientId;
-  if (!clientId) {
-    throw new Error('auth/unauthorized-domain');
-  }
-
-  await loadGisScriptIfNeeded();
-  const oauth2 = window.google?.accounts?.oauth2;
-  if (!oauth2) {
-    throw new Error('auth/unauthorized-domain');
-  }
-
-  const accessToken = await new Promise<string>((resolve, reject) => {
-    const client = oauth2.initTokenClient({
-      client_id: clientId,
-      scope: `${DRIVE_SCOPE} openid email profile`,
-      callback: (resp) => {
-        if (resp.error || !resp.access_token) {
-          reject(
-            new Error(resp.error_description || resp.error || 'auth/unauthorized-domain')
+  try {
+    try {
+      const created = await createUserWithEmailAndPassword(
+        secondaryAuth,
+        authEmail,
+        password
+      );
+      return { authEmail, authUid: created.user.uid };
+    } catch (err: unknown) {
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code: unknown }).code)
+          : '';
+      if (code === 'auth/email-already-in-use') {
+        try {
+          const signed = await signInWithEmailAndPassword(
+            secondaryAuth,
+            authEmail,
+            password
           );
-          return;
+          return { authEmail, authUid: signed.user.uid };
+        } catch {
+          return { authEmail, authUid: '' };
         }
-        resolve(resp.access_token);
-      },
-      error_callback: (err) => {
-        reject(new Error(err.message || err.type || 'auth/unauthorized-domain'));
-      },
-    });
-    client.requestAccessToken({ prompt: 'select_account' });
-  });
-
-  const credential = GoogleAuthProvider.credential(null, accessToken);
-  const result = await signInWithCredential(auth, credential);
-  return { user: result.user, accessToken };
+      }
+      return { authEmail, authUid: '', errorCode: code || 'unknown' };
+    }
+  } finally {
+    await signOut(secondaryAuth).catch(() => {});
+    await deleteApp(secondaryApp).catch(() => {});
+  }
 }
 
 export const googleSignIn = async (): Promise<{
@@ -206,45 +199,58 @@ export const googleSignIn = async (): Promise<{
 } | null> => {
   try {
     isSigningIn = true;
-    try {
-      const result = await signInWithPopup(auth, provider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (!credential?.accessToken) {
-        throw new Error('Gagal memperoleh akses token Google Drive dari autentikasi.');
-      }
-      cachedAccessToken = credential.accessToken;
-      return { user: result.user, accessToken: cachedAccessToken };
-    } catch (popupErr: unknown) {
-      const msg = popupErr instanceof Error ? popupErr.message : String(popupErr);
-      const code =
-        typeof popupErr === 'object' && popupErr !== null && 'code' in popupErr
-          ? String((popupErr as { code: unknown }).code)
-          : '';
-
-      if (
-        code === 'auth/unauthorized-domain' ||
-        msg.includes('auth/unauthorized-domain')
-      ) {
-        // Fallback via Google Identity Services + signInWithCredential
-        // which bypasses Firebase authDomain handler checks on shared URLs.
-        try {
-          const gisResult = await signInWithGisFallback();
-          cachedAccessToken = gisResult.accessToken;
-          return gisResult;
-        } catch (gisErr) {
-          const gisMsg = gisErr instanceof Error ? gisErr.message : String(gisErr);
-          const err = new Error(`auth/unauthorized-domain (${gisMsg})`);
-          throw err;
-        }
-      }
-      throw popupErr;
+    const result = await signInWithPopup(auth, provider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (!credential?.accessToken) {
+      throw new Error('Gagal memperoleh akses token Google Drive dari autentikasi.');
     }
+    cachedAccessToken = credential.accessToken;
+    return { user: result.user, accessToken: cachedAccessToken };
   } catch (error) {
     console.error('Sign in error:', error);
     throw error;
   } finally {
     isSigningIn = false;
   }
+};
+
+/**
+ * Directly requests a Google Drive OAuth access token via GIS synchronously
+ * inside a user click gesture (avoids popup blockers after async failures).
+ */
+export const connectGoogleDriveDirect = (): Promise<string> => {
+  const clientId = firebaseConfig.oAuthClientId;
+  const oauth2 = window.google?.accounts?.oauth2;
+
+  if (!clientId || !oauth2) {
+    return googleSignIn().then((res) => {
+      if (!res?.accessToken) {
+        throw new Error('Gagal menghubungkan Google Drive.');
+      }
+      return res.accessToken;
+    });
+  }
+
+  return new Promise<string>((resolve, reject) => {
+    const client = oauth2.initTokenClient({
+      client_id: clientId,
+      scope: DRIVE_SCOPE,
+      callback: (resp) => {
+        if (resp.error || !resp.access_token) {
+          reject(
+            new Error(resp.error_description || resp.error || 'Gagal otorisasi Google Drive')
+          );
+          return;
+        }
+        cachedAccessToken = resp.access_token;
+        resolve(resp.access_token);
+      },
+      error_callback: (err) => {
+        reject(new Error(err.message || err.type || 'Popup otorisasi Google Drive diblokir'));
+      },
+    });
+    client.requestAccessToken({ prompt: 'select_account' });
+  });
 };
 
 export const getAccessToken = (): string | null => {
@@ -255,5 +261,3 @@ export const logout = async () => {
   cachedAccessToken = null;
   await auth.signOut();
 };
-
-export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;

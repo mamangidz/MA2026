@@ -10,16 +10,40 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isVerified() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+    function isGoogleVerified() {
+      return isSignedIn()
+        && request.auth.token.firebase.sign_in_provider == 'google.com'
+        && request.auth.token.email_verified == true;
+    }
+
+    function isPasswordAuth() {
+      return isSignedIn()
+        && request.auth.token.firebase.sign_in_provider == 'password';
+    }
+
+    function isAuthenticatedUser() {
+      return isGoogleVerified() || isPasswordAuth();
     }
 
     function isBootstrappedAdmin() {
-      return isVerified() && request.auth.token.email == 'mamangidz@gmail.com';
+      return isGoogleVerified() && request.auth.token.email == 'mamangidz@gmail.com';
+    }
+
+    function isRegisteredAdmin() {
+      return isAuthenticatedUser()
+        && exists(/databases/$(database)/documents/admin_emails/$(request.auth.token.email));
+    }
+
+    function isAnyAdmin() {
+      return isBootstrappedAdmin() || isRegisteredAdmin();
     }
 
     function isValidId(id) {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEmailKey(emailKey) {
+      return emailKey is string && emailKey.size() >= 3 && emailKey.size() <= 120 && emailKey.matches('^[a-zA-Z0-9._\\-@]+$');
     }
 
     function incoming() {
@@ -51,16 +75,26 @@ service cloud.firestore {
         && data.updatedByUid == request.auth.uid;
     }
 
+    function isValidAdminRegistry(data) {
+      return data.keys().hasAll(['email', 'picName', 'active', 'createdAt', 'createdByUid'])
+        && data.keys().hasOnly(['email', 'picName', 'active', 'createdAt', 'createdByUid'])
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 120
+        && data.picName is string && data.picName.size() >= 1 && data.picName.size() <= 100
+        && data.active is bool
+        && data.createdAt is timestamp
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128;
+    }
+
     function isValidManagedUser(data) {
       return data.keys().hasAll([
           'id', 'rowNumber', 'location', 'picName', 'role', 'username',
-          'password', 'googleEmail', 'devicePolicy', 'active', 'ownerUid',
-          'createdAt', 'updatedAt'
+          'password', 'authEmail', 'authUid', 'googleEmail', 'adminEmails',
+          'devicePolicy', 'active', 'ownerUid', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
           'id', 'rowNumber', 'location', 'picName', 'role', 'username',
-          'password', 'googleEmail', 'devicePolicy', 'active', 'ownerUid',
-          'createdAt', 'updatedAt'
+          'password', 'authEmail', 'authUid', 'googleEmail', 'adminEmails',
+          'devicePolicy', 'active', 'ownerUid', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
         && data.rowNumber is int
@@ -71,7 +105,10 @@ service cloud.firestore {
         && data.role is string && data.role in ['user', 'admin', 'viewer']
         && data.username is string && data.username.size() >= 1 && data.username.size() <= 60
         && data.password is string && data.password.size() >= 1 && data.password.size() <= 100
+        && data.authEmail is string && data.authEmail.size() <= 120
+        && data.authUid is string && data.authUid.size() <= 128
         && data.googleEmail is string && data.googleEmail.size() <= 120
+        && isBoundedStringList(data.adminEmails, 10)
         && data.devicePolicy is string && data.devicePolicy in ['android_cellular', 'windows_pc']
         && data.active is bool
         && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
@@ -131,13 +168,13 @@ service cloud.firestore {
     }
 
     match /config/{configId} {
-      allow get: if isVerified() && configId == 'app_taxonomy';
+      allow get: if isAuthenticatedUser() && configId == 'app_taxonomy';
       allow list: if false;
-      allow create: if isBootstrappedAdmin()
+      allow create: if isAnyAdmin()
         && configId == 'app_taxonomy'
         && isValidAppTaxonomy(incoming())
         && incoming().updatedAt == request.time;
-      allow update: if isBootstrappedAdmin()
+      allow update: if isAnyAdmin()
         && configId == 'app_taxonomy'
         && isValidAppTaxonomy(incoming())
         && incoming().updatedAt == request.time
@@ -145,19 +182,40 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /managed_users/{userId} {
-      allow get: if isVerified()
-        && isValidId(userId)
-        && (isBootstrappedAdmin()
-          || existing().ownerUid == request.auth.uid
-          || (existing().googleEmail != '' && existing().googleEmail == request.auth.token.email));
+    match /admin_emails/{emailId} {
+      allow get: if isAuthenticatedUser() && isValidEmailKey(emailId) && (isAnyAdmin() || emailId == request.auth.token.email);
+      allow list: if false;
+      allow create: if isAnyAdmin()
+        && isValidEmailKey(emailId)
+        && isValidAdminRegistry(incoming())
+        && incoming().email == emailId
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if isAnyAdmin()
+        && isValidEmailKey(emailId)
+        && isValidAdminRegistry(incoming())
+        && incoming().email == existing().email
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt;
+      allow delete: if isAnyAdmin() && isValidEmailKey(emailId);
+    }
 
-      allow list: if isVerified()
+    match /managed_users/{userId} {
+      allow get: if isAuthenticatedUser()
+        && isValidId(userId)
+        && (isAnyAdmin()
+          || existing().ownerUid == request.auth.uid
+          || (isPasswordAuth() && existing().authEmail != '' && existing().authEmail == request.auth.token.email)
+          || (isGoogleVerified() && existing().googleEmail != '' && existing().googleEmail == request.auth.token.email));
+
+      allow list: if isAuthenticatedUser()
         && (isBootstrappedAdmin()
           || resource.data.ownerUid == request.auth.uid
-          || (resource.data.googleEmail != '' && resource.data.googleEmail == request.auth.token.email));
+          || (isPasswordAuth() && resource.data.authEmail != '' && resource.data.authEmail == request.auth.token.email)
+          || (isGoogleVerified() && resource.data.googleEmail != '' && resource.data.googleEmail == request.auth.token.email)
+          || (request.auth.token.email in resource.data.adminEmails));
 
-      allow create: if isBootstrappedAdmin()
+      allow create: if isAnyAdmin()
         && isValidId(userId)
         && isValidManagedUser(incoming())
         && incoming().id == userId
@@ -165,7 +223,7 @@ service cloud.firestore {
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
-      allow update: if isBootstrappedAdmin()
+      allow update: if isAnyAdmin()
         && isValidId(userId)
         && isValidManagedUser(incoming())
         && incoming().id == existing().id
@@ -174,27 +232,28 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'rowNumber', 'location', 'picName', 'role', 'username',
-          'password', 'googleEmail', 'devicePolicy', 'active', 'updatedAt'
+          'password', 'authEmail', 'authUid', 'googleEmail', 'adminEmails',
+          'devicePolicy', 'active', 'updatedAt'
         ]);
 
-      allow delete: if isBootstrappedAdmin() && isValidId(userId);
+      allow delete: if isAnyAdmin() && isValidId(userId);
     }
 
     match /photo_submissions/{submissionId} {
-      allow get: if isVerified()
+      allow get: if isAuthenticatedUser()
         && isValidId(submissionId)
-        && (isBootstrappedAdmin()
+        && (isAnyAdmin()
           || existing().uploadedByUid == request.auth.uid
           || (request.auth.token.email in existing().viewerEmails)
           || (request.auth.token.email in existing().adminEmails));
 
-      allow list: if isVerified()
+      allow list: if isAuthenticatedUser()
         && (isBootstrappedAdmin()
           || resource.data.uploadedByUid == request.auth.uid
           || (request.auth.token.email in resource.data.viewerEmails)
           || (request.auth.token.email in resource.data.adminEmails));
 
-      allow create: if isVerified()
+      allow create: if isAuthenticatedUser()
         && isValidId(submissionId)
         && isValidPhotoSubmission(incoming())
         && incoming().id == submissionId
@@ -207,7 +266,7 @@ service cloud.firestore {
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
-      allow update: if isVerified()
+      allow update: if isAuthenticatedUser()
         && isValidId(submissionId)
         && isValidPhotoSubmission(incoming())
         && incoming().id == existing().id
@@ -217,7 +276,7 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           (
-            isBootstrappedAdmin()
+            isAnyAdmin()
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'validationStatus', 'validationNote', 'validatedBy', 'validatedAt',
               'viewerEmails', 'adminEmails', 'notes', 'updatedAt'
@@ -232,7 +291,7 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if isBootstrappedAdmin() && isValidId(submissionId);
+      allow delete: if isAnyAdmin() && isValidId(submissionId);
     }
   }
 }

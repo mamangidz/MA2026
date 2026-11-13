@@ -4,6 +4,8 @@ import {
   Check,
   Copy,
   ExternalLink,
+  Eye,
+  EyeOff,
   FolderOpen,
   KeyRound,
   LogOut,
@@ -33,11 +35,13 @@ import {
   PhotoSubmission,
 } from './types';
 import {
+  connectGoogleDriveDirect,
   db,
   FIREBASE_PROJECT_ID,
   googleSignIn,
   handleFirestoreError,
   initAuth,
+  loginWithUsernamePassword,
   logout,
   OperationType,
 } from './lib/firebase';
@@ -104,18 +108,25 @@ function MainApp() {
   const [authError, setAuthError] = useState('');
   const [copiedHost, setCopiedHost] = useState(false);
 
+  // Username & Password login form state
+  const [usernameInput, setUsernameInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
   const [locations, setLocations] = useState<string[]>(DEFAULT_LOCATIONS);
   const [workStages, setWorkStages] = useState<string[]>(DEFAULT_WORK_STAGES);
   const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
   const [usersLoaded, setUsersLoaded] = useState(false);
+  const [isRegisteredAdmin, setIsRegisteredAdmin] = useState(false);
+  const [adminCheckDone, setAdminCheckDone] = useState(false);
   const [submissions, setSubmissions] = useState<PhotoSubmission[]>([]);
 
-  // Optional PIC Session override (e.g. Admin testing User/Viewer credentials from User Management table)
+  // Optional PIC Session override for Admin testing
   const [picOverride, setPicOverride] = useState<ActivePicProfile | null>(null);
   const [picModalOpen, setPicModalOpen] = useState(false);
-  const [loginUsername, setLoginUsername] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
-  const [picLoginError, setPicLoginError] = useState('');
+  const [switchUsername, setSwitchUsername] = useState('');
+  const [switchPassword, setSwitchPassword] = useState('');
+  const [picSwitchError, setPicSwitchError] = useState('');
 
   useEffect(() => {
     const unsub = initAuth((user, token) => {
@@ -127,19 +138,48 @@ function MainApp() {
         setManagedUsers([]);
         setSubmissions([]);
         setUsersLoaded(false);
+        setIsRegisteredAdmin(false);
+        setAdminCheckDone(false);
       }
     });
     return () => unsub();
   }, []);
 
   const userEmail = (firebaseUser?.email || '').toLowerCase();
+  const isPasswordProvider = Boolean(
+    firebaseUser?.providerData?.some((p) => p.providerId === 'password')
+  );
+  const isGoogleVerified = Boolean(
+    firebaseUser && !isPasswordProvider && firebaseUser.emailVerified
+  );
   const isBootstrappedAdmin =
-    Boolean(firebaseUser?.emailVerified) &&
-    userEmail === BOOTSTRAPPED_ADMIN_EMAIL;
+    isGoogleVerified && userEmail === BOOTSTRAPPED_ADMIN_EMAIL;
+  const isAuthenticated = Boolean(firebaseUser && (isPasswordProvider || isGoogleVerified));
+
+  // Check admin_emails registry
+  useEffect(() => {
+    if (!isAuthenticated || !userEmail) return;
+    if (isBootstrappedAdmin) {
+      setIsRegisteredAdmin(true);
+      setAdminCheckDone(true);
+      return;
+    }
+
+    getDoc(doc(db, 'admin_emails', userEmail))
+      .then((snap) => {
+        setIsRegisteredAdmin(snap.exists() && snap.data()?.active === true);
+      })
+      .catch(() => {
+        setIsRegisteredAdmin(false);
+      })
+      .finally(() => {
+        setAdminCheckDone(true);
+      });
+  }, [isAuthenticated, userEmail, isBootstrappedAdmin]);
 
   // Load taxonomy config
   useEffect(() => {
-    if (!firebaseUser || !firebaseUser.emailVerified) return;
+    if (!isAuthenticated) return;
     getDoc(doc(db, 'config', 'app_taxonomy'))
       .then((snap) => {
         if (snap.exists()) {
@@ -155,18 +195,31 @@ function MainApp() {
       .catch((err) => {
         console.warn('Taxonomy load fallback to defaults:', err);
       });
-  }, [firebaseUser]);
+  }, [isAuthenticated]);
 
   // Listen to managed_users
   useEffect(() => {
-    if (!firebaseUser || !firebaseUser.emailVerified) return;
+    if (!isAuthenticated || !adminCheckDone) return;
 
-    const q = isBootstrappedAdmin
-      ? collection(db, 'managed_users')
-      : query(
-          collection(db, 'managed_users'),
-          where('googleEmail', '==', userEmail)
-        );
+    let q;
+    if (isBootstrappedAdmin) {
+      q = collection(db, 'managed_users');
+    } else if (isRegisteredAdmin) {
+      q = query(
+        collection(db, 'managed_users'),
+        where('adminEmails', 'array-contains', userEmail)
+      );
+    } else if (isPasswordProvider) {
+      q = query(
+        collection(db, 'managed_users'),
+        where('authEmail', '==', userEmail)
+      );
+    } else {
+      q = query(
+        collection(db, 'managed_users'),
+        where('googleEmail', '==', userEmail)
+      );
+    }
 
     const unsub = onSnapshot(
       q,
@@ -182,19 +235,30 @@ function MainApp() {
     );
 
     return () => unsub();
-  }, [firebaseUser, isBootstrappedAdmin, userEmail]);
+  }, [
+    isAuthenticated,
+    adminCheckDone,
+    isBootstrappedAdmin,
+    isRegisteredAdmin,
+    isPasswordProvider,
+    userEmail,
+  ]);
 
   // Resolve active PIC profile
   const activeProfile = useMemo<ActivePicProfile | null>(() => {
-    if (!firebaseUser) return null;
+    if (!firebaseUser || !isAuthenticated) return null;
     if (picOverride) return picOverride;
 
-    const matched = managedUsers.find(
-      (u) =>
-        u.active &&
-        u.googleEmail &&
-        u.googleEmail.toLowerCase() === userEmail
-    );
+    const matched = managedUsers.find((u) => {
+      if (!u.active) return false;
+      if (isPasswordProvider && u.authEmail?.toLowerCase() === userEmail) {
+        return true;
+      }
+      if (!isPasswordProvider && u.googleEmail?.toLowerCase() === userEmail) {
+        return true;
+      }
+      return false;
+    });
 
     if (matched) {
       return {
@@ -221,11 +285,19 @@ function MainApp() {
     }
 
     return null;
-  }, [firebaseUser, picOverride, managedUsers, userEmail, isBootstrappedAdmin]);
+  }, [
+    firebaseUser,
+    isAuthenticated,
+    picOverride,
+    managedUsers,
+    isPasswordProvider,
+    userEmail,
+    isBootstrappedAdmin,
+  ]);
 
   // Listen to photo_submissions scoped by role
   useEffect(() => {
-    if (!firebaseUser || !firebaseUser.emailVerified || !activeProfile) return;
+    if (!firebaseUser || !isAuthenticated || !activeProfile) return;
 
     let q;
     if (isBootstrappedAdmin) {
@@ -259,7 +331,48 @@ function MainApp() {
     );
 
     return () => unsub();
-  }, [firebaseUser, activeProfile, isBootstrappedAdmin, userEmail]);
+  }, [firebaseUser, isAuthenticated, activeProfile, isBootstrappedAdmin, userEmail]);
+
+  const handleUsernamePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    const uname = usernameInput.trim();
+    const pwd = passwordInput.trim();
+    if (!uname || !pwd) {
+      setAuthError('Masukkan username dan password.');
+      return;
+    }
+
+    setIsLoggingIn(true);
+    try {
+      const user = await loginWithUsernamePassword(uname, pwd);
+      setFirebaseUser(user);
+    } catch (err: unknown) {
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code: unknown }).code)
+          : '';
+      const msg = err instanceof Error ? err.message : String(err);
+
+      if (code === 'auth/operation-not-allowed' || msg.includes('operation-not-allowed')) {
+        setAuthError(
+          'auth/operation-not-allowed: Login Email/Password belum diaktifkan di Firebase Console.'
+        );
+      } else if (
+        code === 'auth/invalid-credential' ||
+        code === 'auth/user-not-found' ||
+        code === 'auth/wrong-password'
+      ) {
+        setAuthError(
+          'Username atau password tidak cocok, atau akun belum disinkronkan oleh Admin di Manajemen User.'
+        );
+      } else {
+        setAuthError(msg);
+      }
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
 
   const handleGoogleLogin = async (): Promise<string | null> => {
     setIsLoggingIn(true);
@@ -284,16 +397,29 @@ function MainApp() {
     }
   };
 
+  const handleConnectDriveToken = async (): Promise<string | null> => {
+    try {
+      const token = await connectGoogleDriveDirect();
+      setAccessToken(token);
+      return token;
+    } catch (err) {
+      console.error('Drive token error:', err);
+      return null;
+    }
+  };
+
   const handleLogout = async () => {
     setPicOverride(null);
+    setUsernameInput('');
+    setPasswordInput('');
     await logout();
   };
 
-  const handlePicCredentialLogin = (e: React.FormEvent) => {
+  const handlePicCredentialSwitch = (e: React.FormEvent) => {
     e.preventDefault();
-    setPicLoginError('');
-    const uname = loginUsername.trim().toLowerCase();
-    const pwd = loginPassword.trim();
+    setPicSwitchError('');
+    const uname = switchUsername.trim().toLowerCase();
+    const pwd = switchPassword.trim();
 
     const matched = managedUsers.find(
       (u) =>
@@ -303,7 +429,7 @@ function MainApp() {
     );
 
     if (!matched) {
-      setPicLoginError(
+      setPicSwitchError(
         'Username atau password tidak ditemukan pada tabel User Management (atau akun nonaktif).'
       );
       return;
@@ -319,8 +445,8 @@ function MainApp() {
       devicePolicy: matched.devicePolicy,
     });
     setPicModalOpen(false);
-    setLoginUsername('');
-    setLoginPassword('');
+    setSwitchUsername('');
+    setSwitchPassword('');
   };
 
   if (!authReady) {
@@ -331,8 +457,12 @@ function MainApp() {
     );
   }
 
-  // Unauthenticated Landing / Sign-In Screen
+  // Unauthenticated Login Screen (Username & Password Primary + Google Secondary)
   if (!firebaseUser) {
+    const isUnauthorizedDomain =
+      authError.includes('unauthorized-domain') || authError.includes('origin');
+    const isProviderDisabled = authError.includes('operation-not-allowed');
+
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col">
         <header className="border-b border-slate-200 bg-white px-6 py-4">
@@ -353,39 +483,112 @@ function MainApp() {
           </div>
         </header>
 
-        <main className="mx-auto flex flex-1 w-full max-w-6xl items-center px-4 py-12 sm:px-6">
+        <main className="mx-auto flex flex-1 w-full max-w-6xl items-center px-4 py-8 sm:px-6 sm:py-12">
           <div className="grid w-full grid-cols-1 gap-8 lg:grid-cols-12 items-stretch">
-            <div className="flex flex-col justify-center space-y-6 lg:col-span-7">
-              <div className="space-y-3">
+            {/* Left: Login Form with Username & Password */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 flex flex-col justify-center space-y-6 lg:col-span-6">
+              <div className="space-y-1.5">
                 <p className="text-xs font-semibold tracking-wide text-blue-700">
                   Dokumentasi Peralatan &amp; Dokumen Lapangan
                 </p>
-                <h1 className="font-display text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl text-balance">
-                  Pengumpulan Foto Lapangan Terstruktur ke Google Drive
+                <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
+                  Masuk ke FieldSnap Drive
                 </h1>
-                <p className="max-w-xl text-base leading-relaxed text-slate-600">
-                  Kirim foto peralatan dan dokumen langsung dari telepon seluler Android dengan penandaan waktu, tanggal, dan GPS otomatis ke folder Google Drive sesuai lokasi dan tahapan pekerjaan.
+                <p className="text-xs sm:text-sm text-slate-600">
+                  Gunakan Username dan Password sesuai data otorisasi (User, Viewer, atau Admin).
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-4">
-                <GoogleSignInButton
-                  onClick={handleGoogleLogin}
+              <form onSubmit={handleUsernamePasswordSubmit} className="space-y-4">
+                <div>
+                  <label
+                    htmlFor="login-username"
+                    className="block text-xs font-medium text-slate-700 mb-1.5"
+                  >
+                    Username
+                  </label>
+                  <input
+                    id="login-username"
+                    type="text"
+                    autoComplete="username"
+                    value={usernameInput}
+                    onChange={(e) => setUsernameInput(e.target.value)}
+                    placeholder="Masukkan username (contoh: Wahyu, Neneng, Pusat)"
+                    required
+                    className="min-h-[44px] w-full rounded-lg border border-slate-300 bg-white px-3.5 text-sm text-slate-900 focus:border-blue-700 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="login-password"
+                    className="block text-xs font-medium text-slate-700 mb-1.5"
+                  >
+                    Password
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="login-password"
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="current-password"
+                      value={passwordInput}
+                      onChange={(e) => setPasswordInput(e.target.value)}
+                      placeholder="Masukkan password"
+                      required
+                      className="min-h-[44px] w-full rounded-lg border border-slate-300 bg-white pl-3.5 pr-11 text-sm text-slate-900 focus:border-blue-700 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-slate-400 hover:text-slate-700"
+                      aria-label={showPassword ? 'Sembunyikan password' : 'Lihat password'}
+                    >
+                      {showPassword ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
                   disabled={isLoggingIn}
-                  label={isLoggingIn ? 'Menghubungkan...' : 'Masuk dengan Google Drive'}
-                />
-              </div>
+                  className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white transition-colors hover:bg-blue-800 disabled:opacity-60"
+                >
+                  <KeyRound className="h-4 w-4" />
+                  {isLoggingIn ? 'Memverifikasi...' : 'Masuk dengan Username'}
+                </button>
+              </form>
 
               {authError && (
-                <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-900 max-w-lg space-y-2.5">
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-900 space-y-2.5">
                   <p className="font-semibold text-red-800">{authError}</p>
-                  {(authError.includes('unauthorized-domain') ||
-                    authError.includes('origin')) && (
+
+                  {isProviderDisabled && (
+                    <div className="space-y-1.5 border-t border-red-200 pt-2 text-slate-700">
+                      <p>
+                        Aktifkan provider <strong>Email/Password</strong> di Firebase Console:
+                        Authentication → Sign-in method → Add new provider → Email/Password.
+                      </p>
+                      <a
+                        href={`https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/authentication/providers`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline"
+                      >
+                        Buka Firebase Sign-in Method
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    </div>
+                  )}
+
+                  {isUnauthorizedDomain && (
                     <div className="space-y-2 border-t border-red-200 pt-2.5 text-slate-700">
                       <p>
-                        Domain aplikasi saat ini belum terdaftar di{' '}
-                        <strong>Firebase Authorized Domains</strong> proyek{' '}
-                        <span className="font-mono">{FIREBASE_PROJECT_ID}</span>:
+                        Untuk login via popup Google di domain ini, tambahkan domain ke{' '}
+                        <strong>Firebase Authorized Domains</strong>:
                       </p>
                       <div className="flex items-center justify-between gap-2 rounded-lg border border-red-200 bg-white px-3 py-2">
                         <span className="font-mono text-[11px] text-slate-900 break-all">
@@ -423,26 +626,38 @@ function MainApp() {
                           Buka Firebase Authorized Domains
                           <ExternalLink className="h-3 w-3" />
                         </a>
-                        <a
-                          href={`https://console.cloud.google.com/apis/credentials?project=${FIREBASE_PROJECT_ID}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline"
-                        >
-                          Buka Google OAuth Origins
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
                       </div>
                     </div>
                   )}
                 </div>
               )}
+
+              <div className="relative flex items-center py-1">
+                <div className="flex-grow border-t border-slate-200" />
+                <span className="mx-3 shrink text-xs text-slate-400">
+                  atau akun Admin Google
+                </span>
+                <div className="flex-grow border-t border-slate-200" />
+              </div>
+
+              <GoogleSignInButton
+                onClick={handleGoogleLogin}
+                disabled={isLoggingIn}
+                label="Masuk sebagai Admin (Google)"
+                className="w-full"
+              />
             </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 space-y-5 lg:col-span-5 flex flex-col justify-between">
-              <h2 className="text-sm font-semibold text-slate-900">
-                Ketentuan Peran &amp; Perangkat
-              </h2>
+            {/* Right: Role & Device Policy Info */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 space-y-6 lg:col-span-6 flex flex-col justify-between">
+              <div className="space-y-2">
+                <h2 className="text-base font-semibold text-slate-900">
+                  Ketentuan Peran, Perangkat &amp; Google Drive
+                </h2>
+                <p className="text-xs leading-relaxed text-slate-600">
+                  Semua foto peralatan lapangan dan foto dokumen disimpan terpusat ke Google Drive dengan penamaan folder otomatis berdasarkan lokasi, tahapan pekerjaan, dan tanggal kegiatan.
+                </p>
+              </div>
 
               <div className="space-y-4">
                 <div className="flex items-start gap-3">
@@ -454,7 +669,7 @@ function MainApp() {
                       User Lapangan (HP Cellular Android)
                     </p>
                     <p className="text-xs text-slate-600">
-                      Input foto peralatan &amp; dokumen di lapangan lengkap dengan koordinat GPS, jam, dan tanggal perangkat.
+                      Mengambil foto peralatan dan dokumen di lapangan lengkap dengan jam, tanggal, dan koordinat GPS perangkat seluler.
                     </p>
                   </div>
                 </div>
@@ -468,7 +683,7 @@ function MainApp() {
                       Admin (PC Windows)
                     </p>
                     <p className="text-xs text-slate-600">
-                      Mengelola tabel user management (user, admin, viewer) dan memvalidasi kelayakan foto lapangan.
+                      Mengelola tabel manajemen user (user, admin, viewer) dan memvalidasi kelayakan foto lapangan.
                     </p>
                   </div>
                 </div>
@@ -482,17 +697,25 @@ function MainApp() {
                       Viewer (PC Windows)
                     </p>
                     <p className="text-xs text-slate-600">
-                      Melihat foto peralatan dan dokumen secara terbatas hanya untuk lokasi penugasan masing-masing.
+                      Melihat dokumentasi foto yang dikirim user, terbatas hanya pada lokasi wilayah tugas masing-masing.
                     </p>
                   </div>
                 </div>
               </div>
 
-              <div className="border-t border-slate-100 pt-4 text-xs text-slate-500">
-                Folder Penyimpanan:{' '}
-                <span className="font-mono text-slate-800">
-                  [Lokasi] - [Tahapan] - [Tanggal]
-                </span>
+              <div className="border-t border-slate-100 pt-4 text-xs text-slate-500 space-y-1">
+                <div>
+                  Format Folder:{' '}
+                  <span className="font-mono text-slate-800">
+                    [Lokasi] - [Tahapan] - [Tanggal]
+                  </span>
+                </div>
+                <div>
+                  Format File:{' '}
+                  <span className="font-mono text-slate-800">
+                    [Lokasi]_[Tahapan]_[Kategori]_[Waktu].jpg
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -501,26 +724,23 @@ function MainApp() {
     );
   }
 
-  // Signed-in user not yet mapped in managed_users (and not bootstrapped admin)
-  if (usersLoaded && !activeProfile) {
+  // Signed-in user not mapped in managed_users
+  if (usersLoaded && adminCheckDone && !activeProfile) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 space-y-4 text-center">
           <h2 className="text-base font-bold text-slate-900">
-            Akun Google Belum Terdaftar di User Management
+            Akun Belum Terdaftar di Tabel User Management
           </h2>
           <p className="text-xs leading-relaxed text-slate-600">
-            Email <strong className="text-slate-900">{firebaseUser.email}</strong> belum dihubungkan oleh Admin ke peran User, Viewer, atau Admin pada tabel User Management.
-          </p>
-          <p className="text-xs text-slate-500">
-            Hubungi Admin untuk menambahkan email Google Anda pada kolom Email Google di tabel Manajemen User.
+            Akun <strong className="text-slate-900">{firebaseUser.email}</strong> tidak ditemukan atau statusnya nonaktif pada tabel Manajemen User.
           </p>
           <button
             type="button"
             onClick={handleLogout}
             className="min-h-[40px] w-full rounded-lg border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-800 hover:bg-slate-50"
           >
-            Keluar &amp; Ganti Akun Google
+            Keluar &amp; Login Ulang
           </button>
         </div>
       </div>
@@ -564,21 +784,21 @@ function MainApp() {
             ) : (
               <button
                 type="button"
-                onClick={handleGoogleLogin}
+                onClick={handleConnectDriveToken}
                 className="inline-flex items-center gap-1 font-semibold text-amber-700 hover:underline whitespace-nowrap"
               >
                 <RefreshCw className="h-3 w-3" />
-                Hubungkan Ulang Drive
+                Hubungkan Google Drive
               </button>
             )}
           </div>
 
-          {/* Zone 3: Single Primary Session Action */}
+          {/* Zone 3: Session Action */}
           <div className="flex items-center gap-2 shrink-0">
             {!accessToken && (
               <button
                 type="button"
-                onClick={handleGoogleLogin}
+                onClick={handleConnectDriveToken}
                 className="md:hidden inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 text-xs font-medium text-amber-800 whitespace-nowrap"
               >
                 <RefreshCw className="h-3.5 w-3.5" />
@@ -586,19 +806,21 @@ function MainApp() {
               </button>
             )}
 
-            {isBootstrappedAdmin && !picOverride && managedUsers.length > 0 && (
-              <button
-                type="button"
-                onClick={() => {
-                  setPicLoginError('');
-                  setPicModalOpen(true);
-                }}
-                className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-800 hover:bg-slate-50 whitespace-nowrap shrink-0"
-              >
-                <KeyRound className="h-3.5 w-3.5" />
-                Masuk Sesi PIC
-              </button>
-            )}
+            {(isBootstrappedAdmin || isRegisteredAdmin) &&
+              !picOverride &&
+              managedUsers.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPicSwitchError('');
+                    setPicModalOpen(true);
+                  }}
+                  className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-800 hover:bg-slate-50 whitespace-nowrap shrink-0"
+                >
+                  <KeyRound className="h-3.5 w-3.5" />
+                  Uji Akun PIC
+                </button>
+              )}
 
             {picOverride && (
               <button
@@ -634,7 +856,7 @@ function MainApp() {
             workStages={workStages}
             submissions={submissions}
             managedUsers={managedUsers}
-            onRequestReconnectDrive={handleGoogleLogin}
+            onRequestReconnectDrive={handleConnectDriveToken}
           />
         )}
 
@@ -644,7 +866,7 @@ function MainApp() {
             accessToken={accessToken}
             submissions={submissions}
             workStages={workStages}
-            onRequestReconnectDrive={handleGoogleLogin}
+            onRequestReconnectDrive={handleConnectDriveToken}
           />
         )}
 
@@ -658,12 +880,12 @@ function MainApp() {
             managedUsers={managedUsers}
             locations={locations}
             workStages={workStages}
-            onRequestReconnectDrive={handleGoogleLogin}
+            onRequestReconnectDrive={handleConnectDriveToken}
           />
         )}
       </div>
 
-      {/* PIC Login Modal (Username & Password from User Management Table) */}
+      {/* PIC Login Modal */}
       {picModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs"
@@ -675,7 +897,7 @@ function MainApp() {
               <div className="flex items-center gap-2">
                 <Camera className="h-4 w-4 text-blue-700" />
                 <h3 className="text-base font-semibold text-slate-900">
-                  Masuk sebagai PIC (User / Viewer / Admin)
+                  Masuk Sesi PIC (User / Viewer / Admin)
                 </h3>
               </div>
               <button
@@ -690,15 +912,15 @@ function MainApp() {
               Masukkan username dan password dari tabel Manajemen User untuk membuka tampilan sesuai otorisasi dan lokasi akun tersebut.
             </p>
 
-            <form onSubmit={handlePicCredentialLogin} className="mt-4 space-y-4">
+            <form onSubmit={handlePicCredentialSwitch} className="mt-4 space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
                   Username
                 </label>
                 <input
                   type="text"
-                  value={loginUsername}
-                  onChange={(e) => setLoginUsername(e.target.value)}
+                  value={switchUsername}
+                  onChange={(e) => setSwitchUsername(e.target.value)}
                   required
                   className="min-h-[40px] w-full rounded-lg border border-slate-300 px-3 font-mono text-sm"
                 />
@@ -709,15 +931,15 @@ function MainApp() {
                 </label>
                 <input
                   type="password"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
+                  value={switchPassword}
+                  onChange={(e) => setSwitchPassword(e.target.value)}
                   required
                   className="min-h-[40px] w-full rounded-lg border border-slate-300 px-3 font-mono text-sm"
                 />
               </div>
 
-              {picLoginError && (
-                <p className="text-xs font-medium text-red-700">{picLoginError}</p>
+              {picSwitchError && (
+                <p className="text-xs font-medium text-red-700">{picSwitchError}</p>
               )}
 
               <div className="flex items-center justify-end gap-2 pt-2">

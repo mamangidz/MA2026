@@ -45,7 +45,10 @@ export interface ManagedUser {
   role: UserRole;
   username: string;
   password: string;
+  authEmail: string;
+  authUid: string;
   googleEmail: string;
+  adminEmails: string[];
   devicePolicy: DevicePolicy;
   active: boolean;
   ownerUid: string;

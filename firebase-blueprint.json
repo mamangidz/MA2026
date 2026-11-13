@@ -31,6 +31,36 @@
       },
       "required": ["locations", "workStages", "driveRootFolderId", "updatedAt", "updatedByUid"]
     },
+    "AdminRegistry": {
+      "title": "AdminRegistry",
+      "description": "Trusted admin email registry used for role verification.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "picName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": ["email", "picName", "active", "createdAt", "createdByUid"]
+    },
     "ManagedUser": {
       "title": "ManagedUser",
       "description": "User management directory entry with role authorization (user, admin, viewer) and location assignment.",
@@ -69,9 +99,20 @@
           "minLength": 1,
           "maxLength": 100
         },
+        "authEmail": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "authUid": {
+          "type": "string",
+          "maxLength": 128
+        },
         "googleEmail": {
           "type": "string",
           "maxLength": 120
+        },
+        "adminEmails": {
+          "type": "array"
         },
         "devicePolicy": {
           "type": "string",
@@ -102,7 +143,10 @@
         "role",
         "username",
         "password",
+        "authEmail",
+        "authUid",
         "googleEmail",
+        "adminEmails",
         "devicePolicy",
         "active",
         "ownerUid",
@@ -287,6 +331,10 @@
     "/config/{configId}": {
       "schema": { "$ref": "#/entities/AppTaxonomy" },
       "description": "Single configuration document (app_taxonomy) storing locations and work stages."
+    },
+    "/admin_emails/{emailId}": {
+      "schema": { "$ref": "#/entities/AdminRegistry" },
+      "description": "Trusted admin email registry for role checks."
     },
     "/managed_users/{userId}": {
       "schema": { "$ref": "#/entities/ManagedUser" },

@@ -109,19 +109,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               (u) =>
                 u.active &&
                 u.role === 'viewer' &&
-                u.location.toLowerCase() === sub.location.toLowerCase() &&
-                u.googleEmail
+                u.location.toLowerCase() === sub.location.toLowerCase()
             )
-            .map((u) => u.googleEmail.trim().toLowerCase())
+            .flatMap((u) => [u.authEmail, u.googleEmail])
+            .map((e) => (e || '').trim().toLowerCase())
+            .filter(Boolean)
         )
       ).slice(0, 10);
 
-      const currentSorted = [...(sub.viewerEmails || [])].sort().join(',');
-      const expectedSorted = [...expectedViewers].sort().join(',');
-      if (currentSorted !== expectedSorted) {
+      const expectedAdmins = Array.from(
+        new Set([
+          BOOTSTRAPPED_ADMIN_EMAIL,
+          ...managedUsers
+            .filter((u) => u.active && u.role === 'admin')
+            .flatMap((u) => [u.authEmail, u.googleEmail])
+            .map((e) => (e || '').trim().toLowerCase())
+            .filter(Boolean),
+        ])
+      ).slice(0, 10);
+
+      const currentViewers = [...(sub.viewerEmails || [])].sort().join(',');
+      const targetViewers = [...expectedViewers].sort().join(',');
+      const currentAdmins = [...(sub.adminEmails || [])].sort().join(',');
+      const targetAdmins = [...expectedAdmins].sort().join(',');
+
+      if (currentViewers !== targetViewers || currentAdmins !== targetAdmins) {
         try {
           await updateDoc(doc(db, 'photo_submissions', sub.id), {
             viewerEmails: expectedViewers,
+            adminEmails: expectedAdmins,
             updatedAt: serverTimestamp(),
           });
         } catch {

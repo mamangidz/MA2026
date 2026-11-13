@@ -1,12 +1,16 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
+  AlertCircle,
   Download,
   Edit3,
+  ExternalLink,
   Eye,
   EyeOff,
   FileSpreadsheet,
+  KeyRound,
   Link as LinkIcon,
   Plus,
+  RefreshCw,
   Search,
   Trash2,
   Upload,
@@ -20,7 +24,7 @@ import {
   updateDoc,
   writeBatch,
 } from 'firebase/firestore';
-import { ManagedUser, UserRole } from '../types';
+import { BOOTSTRAPPED_ADMIN_EMAIL, ManagedUser, UserRole } from '../types';
 import {
   downloadCsvFile,
   exportUsersToCsv,
@@ -28,7 +32,14 @@ import {
   parseUsersCsv,
 } from '../lib/csvParser';
 import { formatDevicePolicyLabel, getExpectedDevicePolicy } from '../lib/device';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import {
+  db,
+  FIREBASE_PROJECT_ID,
+  handleFirestoreError,
+  OperationType,
+  provisionPasswordAccount,
+  usernameToAuthEmail,
+} from '../lib/firebase';
 import { ConfirmDialog } from './ConfirmDialog';
 
 interface UserManagementTableProps {
@@ -45,6 +56,9 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<'all' | UserRole>('all');
   const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
+  const [providerDisabledWarning, setProviderDisabledWarning] = useState(false);
+  const [syncingAccounts, setSyncingAccounts] = useState(false);
+  const [syncStatusMsg, setSyncStatusMsg] = useState('');
 
   // Add / Edit modal state
   const [formOpen, setFormOpen] = useState(false);
@@ -74,6 +88,35 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
   const [deleteTarget, setDeleteTarget] = useState<ManagedUser | null>(null);
   const [clearAllOpen, setClearAllOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  const collectAdminEmails = (extraAdmins: string[] = []): string[] => {
+    const list = [
+      BOOTSTRAPPED_ADMIN_EMAIL,
+      ...users
+        .filter((u) => u.active && u.role === 'admin')
+        .flatMap((u) => [u.authEmail, u.googleEmail]),
+      ...extraAdmins,
+    ]
+      .map((e) => (e || '').trim().toLowerCase())
+      .filter(Boolean);
+    return Array.from(new Set(list)).slice(0, 10);
+  };
+
+  const registerAdminRegistry = async (
+    email: string,
+    picName: string,
+    active: boolean
+  ) => {
+    const clean = email.trim().toLowerCase();
+    if (!clean) return;
+    await setDoc(doc(db, 'admin_emails', clean), {
+      email: clean,
+      picName: picName.slice(0, 100),
+      active,
+      createdAt: serverTimestamp(),
+      createdByUid: currentUserUid,
+    });
+  };
 
   const filteredUsers = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -132,10 +175,23 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
       setFormError('Lokasi, PIC, Username, dan Password wajib diisi.');
       return;
     }
+    if (pwd.length < 6) {
+      setFormError('Password minimal 6 karakter agar dapat digunakan untuk login.');
+      return;
+    }
 
     setSavingForm(true);
     try {
       const devicePolicy = getExpectedDevicePolicy(formRole);
+      const prov = await provisionPasswordAccount(uname, pwd);
+      if (prov.errorCode === 'auth/operation-not-allowed') {
+        setProviderDisabledWarning(true);
+      }
+
+      const adminEmails = collectAdminEmails(
+        formRole === 'admin' ? [prov.authEmail, gEmail] : []
+      );
+
       if (editingUser) {
         const ref = doc(db, 'managed_users', editingUser.id);
         try {
@@ -146,7 +202,10 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
             role: formRole,
             username: uname.slice(0, 60),
             password: pwd.slice(0, 100),
+            authEmail: prov.authEmail,
+            authUid: prov.authUid || editingUser.authUid || '',
             googleEmail: gEmail.slice(0, 120),
+            adminEmails,
             devicePolicy,
             active: formActive,
             updatedAt: serverTimestamp(),
@@ -168,7 +227,10 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
             role: formRole,
             username: uname.slice(0, 60),
             password: pwd.slice(0, 100),
+            authEmail: prov.authEmail,
+            authUid: prov.authUid,
             googleEmail: gEmail.slice(0, 120),
+            adminEmails,
             devicePolicy,
             active: formActive,
             ownerUid: currentUserUid,
@@ -179,11 +241,67 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
           handleFirestoreError(err, OperationType.CREATE, `managed_users/${id}`);
         }
       }
+
+      if (formRole === 'admin') {
+        await registerAdminRegistry(prov.authEmail, pic, formActive);
+        if (gEmail) {
+          await registerAdminRegistry(gEmail, pic, formActive);
+        }
+      }
+
       setFormOpen(false);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Gagal menyimpan user.');
     } finally {
       setSavingForm(false);
+    }
+  };
+
+  const handleSyncAllLoginAccounts = async () => {
+    setSyncingAccounts(true);
+    setSyncStatusMsg('');
+    setProviderDisabledWarning(false);
+    let syncedCount = 0;
+    let disabledFound = false;
+
+    try {
+      const allAdmins = collectAdminEmails();
+      for (const u of users) {
+        const prov = await provisionPasswordAccount(u.username, u.password);
+        if (prov.errorCode === 'auth/operation-not-allowed') {
+          disabledFound = true;
+          break;
+        }
+        if (prov.authUid) {
+          syncedCount++;
+          await updateDoc(doc(db, 'managed_users', u.id), {
+            authEmail: prov.authEmail,
+            authUid: prov.authUid,
+            adminEmails: allAdmins,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        if (u.role === 'admin') {
+          await registerAdminRegistry(prov.authEmail, u.picName, u.active);
+        }
+      }
+
+      if (disabledFound) {
+        setProviderDisabledWarning(true);
+        setSyncStatusMsg(
+          'Sinkronisasi dihentikan karena provider Email/Password belum diaktifkan di Firebase Console.'
+        );
+      } else {
+        setSyncStatusMsg(
+          `${syncedCount} akun login berhasil disinkronkan untuk masuk dengan Username & Password.`
+        );
+      }
+    } catch (err) {
+      setSyncStatusMsg(
+        err instanceof Error ? err.message : 'Gagal menyinkronkan akun.'
+      );
+    } finally {
+      setSyncingAccounts(false);
     }
   };
 
@@ -269,11 +387,22 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
     setImportingRows(true);
     setImportError('');
     try {
+      const extraAdmins = parsedPreview
+        .filter((r) => r.role === 'admin')
+        .flatMap((r) => [usernameToAuthEmail(r.username), r.googleEmail]);
+      const adminEmails = collectAdminEmails(extraAdmins);
+
       const batch = writeBatch(db);
       const startIndex =
         users.length > 0 ? Math.max(...users.map((u) => u.rowNumber)) : 0;
 
-      parsedPreview.forEach((row, idx) => {
+      for (let idx = 0; idx < parsedPreview.length; idx++) {
+        const row = parsedPreview[idx];
+        const prov = await provisionPasswordAccount(row.username, row.password);
+        if (prov.errorCode === 'auth/operation-not-allowed') {
+          setProviderDisabledWarning(true);
+        }
+
         const id = `usr_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
         batch.set(doc(db, 'managed_users', id), {
           id,
@@ -283,14 +412,24 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
           role: row.role,
           username: row.username.slice(0, 60),
           password: row.password.slice(0, 100),
+          authEmail: prov.authEmail,
+          authUid: prov.authUid,
           googleEmail: row.googleEmail.slice(0, 120),
+          adminEmails,
           devicePolicy: row.devicePolicy,
           active: true,
           ownerUid: currentUserUid,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-      });
+
+        if (row.role === 'admin') {
+          await registerAdminRegistry(prov.authEmail, row.picName, true);
+          if (row.googleEmail) {
+            await registerAdminRegistry(row.googleEmail, row.picName, true);
+          }
+        }
+      }
 
       await batch.commit();
       setImportOpen(false);
@@ -317,6 +456,40 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
 
   return (
     <div className="space-y-4">
+      {providerDisabledWarning && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-950 space-y-2">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-semibold">
+                Aktifkan Login Email/Password di Firebase Console agar user bisa masuk dengan Username &amp; Password
+              </p>
+              <p className="text-amber-900">
+                Buka Firebase Console → <strong>Authentication</strong> →{' '}
+                <strong>Sign-in method</strong> → <strong>Add new provider</strong> →{' '}
+                <strong>Email/Password</strong> → Aktifkan (Enable) → Save. Setelah aktif, klik tombol{' '}
+                <strong>Sinkronkan Akun Login</strong> di bawah.
+              </p>
+              <a
+                href={`https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/authentication/providers`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline pt-1"
+              >
+                Buka Firebase Sign-in Method Settings
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {syncStatusMsg && (
+        <div className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-xs font-medium text-slate-800">
+          {syncStatusMsg}
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-3">
@@ -366,14 +539,26 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
           </button>
 
           {users.length > 0 && (
-            <button
-              type="button"
-              onClick={handleExportCurrentCsv}
-              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
-            >
-              <Download className="h-3.5 w-3.5" />
-              Export CSV
-            </button>
+            <>
+              <button
+                type="button"
+                disabled={syncingAccounts}
+                onClick={handleSyncAllLoginAccounts}
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${syncingAccounts ? 'animate-spin' : ''}`} />
+                {syncingAccounts ? 'Menyinkronkan...' : 'Sinkronkan Login'}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExportCurrentCsv}
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Export CSV
+              </button>
+            </>
           )}
 
           <button
@@ -422,7 +607,7 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
                 <th className="px-4 py-3">Otorisasi</th>
                 <th className="px-4 py-3">Username</th>
                 <th className="px-4 py-3">Password</th>
-                <th className="px-4 py-3">Email Google</th>
+                <th className="px-4 py-3">Status Login</th>
                 <th className="px-4 py-3">Perangkat</th>
                 <th className="px-4 py-3 text-right">Aksi</th>
               </tr>
@@ -515,8 +700,17 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
                           </button>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap">
-                        {u.googleEmail || '—'}
+                      <td className="px-4 py-3 text-xs whitespace-nowrap">
+                        {u.authUid ? (
+                          <span className="inline-flex items-center gap-1 font-medium text-emerald-700">
+                            <KeyRound className="h-3 w-3" />
+                            Siap Login
+                          </span>
+                        ) : (
+                          <span className="text-amber-700 font-medium">
+                            Perlu Sinkronisasi
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap">
                         {formatDevicePolicyLabel(u.devicePolicy)}
@@ -641,13 +835,14 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Password
+                    Password (min. 6 karakter)
                   </label>
                   <input
                     type="text"
                     value={formPassword}
                     onChange={(e) => setFormPassword(e.target.value)}
                     required
+                    minLength={6}
                     maxLength={100}
                     className="min-h-[40px] w-full rounded-lg border border-slate-300 px-3 font-mono text-sm"
                   />
@@ -656,7 +851,7 @@ export const UserManagementTable: React.FC<UserManagementTableProps> = ({
 
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Email Google Perangkat (Opsional — untuk login Google otomatis)
+                  Email Google (Opsional)
                 </label>
                 <input
                   type="email"

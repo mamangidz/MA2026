@@ -433,10 +433,11 @@ export const FieldCaptureView: React.FC<FieldCaptureViewProps> = ({
               (u) =>
                 u.active &&
                 u.role === 'viewer' &&
-                u.location.toLowerCase() === selectedLocation.toLowerCase() &&
-                u.googleEmail
+                u.location.toLowerCase() === selectedLocation.toLowerCase()
             )
-            .map((u) => u.googleEmail.trim().toLowerCase())
+            .flatMap((u) => [u.authEmail, u.googleEmail])
+            .map((e) => (e || '').trim().toLowerCase())
+            .filter(Boolean)
         )
       ).slice(0, 10);
 
@@ -444,8 +445,10 @@ export const FieldCaptureView: React.FC<FieldCaptureViewProps> = ({
         new Set([
           BOOTSTRAPPED_ADMIN_EMAIL,
           ...managedUsers
-            .filter((u) => u.active && u.role === 'admin' && u.googleEmail)
-            .map((u) => u.googleEmail.trim().toLowerCase()),
+            .filter((u) => u.active && u.role === 'admin')
+            .flatMap((u) => [u.authEmail, u.googleEmail])
+            .map((e) => (e || '').trim().toLowerCase())
+            .filter(Boolean),
         ])
       ).slice(0, 10);
 
